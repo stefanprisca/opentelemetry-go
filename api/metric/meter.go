@@ -68,6 +68,19 @@ func (m Meter) NewBatchObserver(callback BatchObserverCallback) BatchObserver {
 	}
 }
 
+// NewUnstartedBatchObserver creates a new UnstartedBatchObserver that supports
+// registering instruments for making batches of observations. The observer is
+// not started yet, which means that it will not run until the AsStarted method is called.
+func (m Meter) NewUnstartedBatchObserver() UnstartedBatchObserver {
+	return UnstartedBatchObserver{
+		BatchObserver: BatchObserver{
+			meter:  m,
+			runner: nil,
+		},
+		toStart: []unstartedInstrument{},
+	}
+}
+
 // NewInt64Counter creates a new integer Counter instrument with the
 // given name, customized with options.  May return an error if the
 // name is invalid (e.g., empty) or improperly registered (e.g.,
@@ -200,6 +213,22 @@ func (m Meter) NewFloat64UpDownSumObserver(name string, callback Float64Observer
 			newFloat64AsyncRunner(callback)))
 }
 
+// AsStarted will create and return a new batch observer which is executing the given callback.
+// All the previously registered instruments on the current UnstartedBatchObserver will also
+// be properly initialized at this point.
+func (ub UnstartedBatchObserver) AsStarted(callback BatchObserverCallback) BatchObserver {
+	batch := BatchObserver{
+		meter:  ub.meter,
+		runner: newBatchAsyncRunner(callback),
+	}
+
+	for _, ts := range ub.toStart {
+		ts(batch)
+	}
+
+	return batch
+}
+
 // NewInt64ValueObserver creates a new integer ValueObserver instrument
 // with the given name, running in a batch callback, and customized with
 // options.  May return an error if the name is invalid (e.g., empty)
@@ -223,6 +252,28 @@ func (b BatchObserver) NewFloat64ValueObserver(name string, opts ...InstrumentOp
 	return wrapFloat64ValueObserverInstrument(
 		b.meter.newAsync(name, ValueObserverKind, Float64NumberKind, opts,
 			b.runner))
+}
+
+// NewUnstartedFloat64ValueObserver creates a new uninitialized floating point ValueObserver and returns a pointer to it.
+// The created value observer can be used to register values as part of a batch.
+// When the batch is started, the value at this pointer is replaced with an initialized observer.
+func (ub UnstartedBatchObserver) NewUnstartedFloat64ValueObserver(name string, opts ...InstrumentOption) (UnstartedBatchObserver, *Float64ValueObserver) {
+	instPtr := &Float64ValueObserver{}
+
+	instrument, _ := wrapFloat64ValueObserverInstrument(NoopAsync{}, nil)
+	*instPtr = instrument
+
+	toStart := func(b BatchObserver) error {
+		floatInst, err := wrapFloat64ValueObserverInstrument(
+			b.meter.newAsync(name, ValueObserverKind, Float64NumberKind, opts,
+				b.runner))
+		*instPtr = floatInst
+		return err
+	}
+
+	ub.toStart = append(ub.toStart, toStart)
+
+	return ub, instPtr
 }
 
 // NewInt64SumObserver creates a new integer SumObserver instrument

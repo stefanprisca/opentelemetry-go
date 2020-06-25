@@ -585,3 +585,24 @@ func TestSyncInAsync(t *testing.T) {
 		"observer.lastvalue//R=V": 10,
 	}, out.Map)
 }
+
+func TestNewObserverBatch(t *testing.T) {
+	ctx := context.Background()
+	meter, sdk, _ := newSDK(t)
+
+	ub := meter.NewUnstartedBatchObserver()
+	ub, floatValueObs := ub.NewUnstartedFloat64ValueObserver("float.valueobserver.lastvalue")
+	ub.AsStarted(
+		func(_ context.Context, result metric.BatchObserverResult) {
+			result.Observe(
+				[]kv.KeyValue{
+					kv.String("A", "B"),
+				},
+				floatValueObs.Observation(1),
+			)
+		})
+
+	collected := sdk.Collect(ctx)
+
+	require.Equal(t, 1, collected)
+}

@@ -14,6 +14,14 @@
 
 package metric
 
+type unstartedInstrument = func(BatchObserver) error
+
+// UnstartedBatchObserver allows to register instruments before starting a batch observer.
+type UnstartedBatchObserver struct {
+	BatchObserver
+	toStart []unstartedInstrument
+}
+
 // BatchObserver represents an Observer callback that can report
 // observations for multiple instruments.
 type BatchObserver struct {

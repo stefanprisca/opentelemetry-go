@@ -16,7 +16,6 @@ package otlp1121
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	colmetricpb "go.opentelemetry.io/otel/exporters/otlp/internal/opentelemetry-proto-gen/collector/metrics/v1"
@@ -40,64 +39,20 @@ type metricsExporter struct {
 	stopCh chan bool
 	// senderMu protects the concurrent unsafe sends on the shared gRPC client connection.
 	senderMu sync.Mutex
+
+	otlpConnection *otlpConnection
 }
 
 func newMetricsExporter(c config) *metricsExporter {
 	me := new(metricsExporter)
 	me.c = c
+	me.otlpConnection = newOtlpConnection(me.enableConnection, me.c)
 	return me
 }
 
-func (me *metricsExporter) Connect() error {
+func (me *metricsExporter) Connect() {
 	me.stopCh = make(chan bool)
-	cc, err := me.dialToCollector()
-	if err != nil {
-		return err
-	}
-
-	err = me.enableConnection(cc)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (me *metricsExporter) prepareCollectorAddress() string {
-	if me.c.collectorAddr != "" {
-		return me.c.collectorAddr
-	}
-	return fmt.Sprintf("%s:%d", DefaultCollectorHost, DefaultCollectorPort)
-}
-
-func (me *metricsExporter) contextWithMetadata(ctx context.Context) context.Context {
-	if me.metadata.Len() > 0 {
-		return metadata.NewOutgoingContext(ctx, me.metadata)
-	}
-	return ctx
-}
-
-func (me *metricsExporter) dialToCollector() (*grpc.ClientConn, error) {
-	addr := me.prepareCollectorAddress()
-
-	dialOpts := []grpc.DialOption{}
-	if me.c.grpcServiceConfig != "" {
-		dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(me.c.grpcServiceConfig))
-	}
-	if me.c.clientCredentials != nil {
-		dialOpts = append(dialOpts, grpc.WithTransportCredentials(me.c.clientCredentials))
-	} else if me.c.canDialInsecure {
-		dialOpts = append(dialOpts, grpc.WithInsecure())
-	}
-	if me.c.compressor != "" {
-		dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(grpc.UseCompressor(me.c.compressor)))
-	}
-	if len(me.c.grpcDialOptions) != 0 {
-		dialOpts = append(dialOpts, me.c.grpcDialOptions...)
-	}
-
-	ctx := me.contextWithMetadata(context.Background())
-	return grpc.DialContext(ctx, addr, dialOpts...)
+	me.otlpConnection.startConnection(me.stopCh)
 }
 
 func (me *metricsExporter) enableConnection(cc *grpc.ClientConn) error {
@@ -162,4 +117,11 @@ func (me *metricsExporter) Export(parent context.Context, cps metricsdk.Checkpoi
 		}
 	}
 	return nil
+}
+
+func (me *metricsExporter) contextWithMetadata(ctx context.Context) context.Context {
+	if me.metadata.Len() > 0 {
+		return metadata.NewOutgoingContext(ctx, me.metadata)
+	}
+	return ctx
 }

@@ -138,9 +138,8 @@ func (e *Exporter) connectExporters() error {
 	}
 
 	log.Println("connecting exporters....")
-	err := e.metricExporter.Connect()
-	log.Println(err)
-	return err
+	e.metricExporter.Connect()
+	return nil
 }
 
 // closeStopCh is used to wrap the exporters stopCh channel closing for testing.

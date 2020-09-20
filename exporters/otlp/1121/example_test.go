@@ -16,6 +16,7 @@ package otlp1121_test
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"testing"
 	"time"
@@ -26,6 +27,9 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/controller/push"
 	"go.opentelemetry.io/otel/sdk/metric/processor/basic"
 	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/semconv"
 	"google.golang.org/grpc"
 )
 
@@ -33,7 +37,10 @@ func TestMetricsConfig(t *testing.T) {
 	exp, err := otlp1121.NewExporter(
 		otlp1121.WithMetricsAddress("localhost:30080"),
 		otlp1121.WithMetricsInsecure(),
-		otlp1121.WithMetricsGRPCDialOption(grpc.WithBlock()))
+		otlp1121.WithMetricsGRPCDialOption(grpc.WithBlock()),
+		otlp1121.WithTracesAddress("localhost:30080"),
+		otlp1121.WithTracesInsecure(),
+		otlp1121.WithTracesGRPCDialOption(grpc.WithBlock()))
 	if err != nil {
 		log.Fatalf("Failed to create the collector exporter: %v", err)
 	}
@@ -46,6 +53,15 @@ func TestMetricsConfig(t *testing.T) {
 		}
 	}()
 
+	tracerProvider := sdktrace.NewProvider(
+		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
+		sdktrace.WithResource(resource.New(
+			// the service name used to display traces in backends
+			semconv.ServiceNameKey.String("test-service"),
+		)),
+		sdktrace.WithBatcher(exp),
+	)
+
 	pusher := push.New(
 		basic.New(
 			simple.NewWithExactDistribution(),
@@ -55,6 +71,7 @@ func TestMetricsConfig(t *testing.T) {
 		push.WithPeriod(time.Second),
 	)
 	global.SetMeterProvider(pusher.Provider())
+	global.SetTracerProvider(tracerProvider)
 	pusher.Start()
 
 	meter := global.Meter("test-meter")
@@ -66,14 +83,22 @@ func TestMetricsConfig(t *testing.T) {
 			metric.WithDescription("Measures the cumulative epicness of the app"),
 		)
 
+	tracer := global.Tracer("test-tracer")
+	ctx, span := tracer.Start(
+		context.Background(),
+		"CollectorExporter-Example")
+
 	// work begins
 
 	for i := 0; i < 10; i++ {
+		_, iSpan := tracer.Start(ctx, fmt.Sprintf("Sample-%d", i))
 		log.Printf("Doing really hard work (%d / 10)\n", i+1)
 		valuerecorder.Add(context.Background(), 1.0)
 
 		<-time.After(time.Second)
+		iSpan.End()
 	}
 
 	log.Printf("Done!")
+	span.End()
 }

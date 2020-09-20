@@ -115,3 +115,18 @@ func WithTracesAddress(addr string) ExporterOption {
 		cfg.traces.collectorAddr = addr
 	}
 }
+
+func WithTracesInsecure() ExporterOption {
+	return func(cfg *compositeConfig) {
+		cfg.traces.canDialInsecure = true
+	}
+}
+
+// WithTracesGRPCDialOption opens support to any grpc.DialOption to be used. If it conflicts
+// with some other configuration the GRPC specified via the collector the ones here will
+// take preference since they are set last.
+func WithTracesGRPCDialOption(opts ...grpc.DialOption) ExporterOption {
+	return func(cfg *compositeConfig) {
+		cfg.traces.grpcDialOptions = opts
+	}
+}

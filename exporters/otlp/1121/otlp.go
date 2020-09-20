@@ -23,7 +23,9 @@ import (
 
 	"go.opentelemetry.io/otel/api/metric"
 	colmetricpb "go.opentelemetry.io/otel/exporters/otlp/internal/opentelemetry-proto-gen/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/otel/exporters/otlp/internal/opentelemetry-proto-gen/collector/trace/v1"
 	"go.opentelemetry.io/otel/exporters/otlp/internal/transform"
+
 	metricsdk "go.opentelemetry.io/otel/sdk/export/metric"
 	"go.opentelemetry.io/otel/sdk/export/metric/aggregation"
 	tracesdk "go.opentelemetry.io/otel/sdk/export/trace"
@@ -38,6 +40,9 @@ type Exporter struct {
 
 	metricsConnection *otlpConnection
 	metricsClient     colmetricpb.MetricsServiceClient
+
+	tracesConnection *otlpConnection
+	tracesClient     coltracepb.TraceServiceClient
 
 	startOnce sync.Once
 	stopCh    chan bool
@@ -91,10 +96,29 @@ func NewUnstartedExporter(opts ...ExporterOption) *Exporter {
 	e.c = newConfig(opts...)
 
 	e.metricsConnection = newOtlpConnection(e.handleNewMetricsConnection, *e.c.metrics)
+	e.tracesConnection = newOtlpConnection(e.handleNewTracesConnection, *e.c.traces)
 
 	// TODO (rghetia): add resources
 
 	return e
+}
+
+func (e *Exporter) handleNewMetricsConnection(cc *grpc.ClientConn) error {
+
+	e.mu.Lock()
+	e.metricsClient = colmetricpb.NewMetricsServiceClient(cc)
+	e.mu.Unlock()
+
+	return nil
+}
+
+func (e *Exporter) handleNewTracesConnection(cc *grpc.ClientConn) error {
+
+	e.mu.Lock()
+	e.tracesClient = coltracepb.NewTraceServiceClient(cc)
+	e.mu.Unlock()
+
+	return nil
 }
 
 var (
@@ -135,15 +159,7 @@ func (e *Exporter) startExporterConnections(stopCh chan bool) error {
 
 	log.Println("connecting exporters....")
 	e.metricsConnection.startConnection(stopCh)
-	return nil
-}
-
-func (e *Exporter) handleNewMetricsConnection(cc *grpc.ClientConn) error {
-
-	e.mu.Lock()
-	e.metricsClient = colmetricpb.NewMetricsServiceClient(cc)
-	e.mu.Unlock()
-
+	e.tracesConnection.startConnection(stopCh)
 	return nil
 }
 
@@ -229,28 +245,29 @@ func (e *Exporter) ExportSpans(ctx context.Context, sds []*tracesdk.SpanData) er
 }
 
 func (e *Exporter) uploadTraces(ctx context.Context, sdl []*tracesdk.SpanData) error {
-	// select {
-	// case <-e.stopCh:
-	// 	return nil
-	// default:
-	// 	if !e.connected() {
-	// 		return nil
-	// 	}
+	select {
+	case <-e.stopCh:
+		return nil
+	default:
+		if !e.tracesConnection.connected() {
+			return nil
+		}
 
-	// 	protoSpans := transform.SpanData(sdl)
-	// 	if len(protoSpans) == 0 {
-	// 		return nil
-	// 	}
+		protoSpans := transform.SpanData(sdl)
+		if len(protoSpans) == 0 {
+			return nil
+		}
 
-	// 	e.senderMu.Lock()
-	// 	_, err := e.traceExporter.Export(e.contextWithMetadata(ctx), &coltracepb.ExportTraceServiceRequest{
-	// 		ResourceSpans: protoSpans,
-	// 	})
-	// 	e.senderMu.Unlock()
-	// 	if err != nil {
-	// 		e.setStateDisconnected(err)
-	// 		return err
-	// 	}
-	// }
+		e.senderMu.Lock()
+		tracesCtx := e.tracesConnection.contextWithMetadata(ctx)
+		_, err := e.tracesClient.Export(tracesCtx, &coltracepb.ExportTraceServiceRequest{
+			ResourceSpans: protoSpans,
+		})
+		e.senderMu.Unlock()
+		if err != nil {
+			e.tracesConnection.setStateDisconnected(err)
+			return err
+		}
+	}
 	return nil
 }

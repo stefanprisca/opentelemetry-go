@@ -46,8 +46,6 @@ type Exporter struct {
 
 	startOnce sync.Once
 	stopCh    chan bool
-
-	c compositeConfig
 }
 
 var _ tracesdk.SpanExporter = (*Exporter)(nil)
@@ -93,10 +91,10 @@ func NewExporter(opts ...ExporterOption) (*Exporter, error) {
 func NewUnstartedExporter(opts ...ExporterOption) *Exporter {
 	log.Println("creating exporter....")
 	e := new(Exporter)
-	e.c = newConfig(opts...)
+	config := newConfig(opts...)
 
-	e.metricsConnection = newOtlpConnection(e.handleNewMetricsConnection, *e.c.metrics)
-	e.tracesConnection = newOtlpConnection(e.handleNewTracesConnection, *e.c.traces)
+	e.metricsConnection = newOtlpConnection(e.handleNewMetricsConnection, *config.metrics)
+	e.tracesConnection = newOtlpConnection(e.handleNewTracesConnection, *config.traces)
 
 	// TODO (rghetia): add resources
 
@@ -211,7 +209,8 @@ func (e *Exporter) Export(parent context.Context, cps metricsdk.CheckpointSet) e
 		}
 	}(ctx, cancel)
 
-	rms, err := transform.CheckpointSet(ctx, e, cps, e.c.metrics.numWorkers)
+	numWorkers := e.metricsConnection.c.numWorkers
+	rms, err := transform.CheckpointSet(ctx, e, cps, numWorkers)
 	if err != nil {
 		return err
 	}

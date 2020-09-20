@@ -127,11 +127,6 @@ var (
 	errContextCanceled = errors.New("context canceled")
 )
 
-// Start dials to the collector, establishing a connection to it. It also
-// initiates the Config and Trace services by sending over the initial
-// messages that consist of the node identifier. Start invokes a background
-// connector that will reattempt connections to the collector periodically
-// if the connection dies.
 func (e *Exporter) Start() error {
 	var err = errAlreadyStarted
 	e.startOnce.Do(func() {
@@ -155,7 +150,6 @@ func (e *Exporter) startExporterConnections(stopCh chan bool) error {
 		return errNotStarted
 	}
 
-	log.Println("connecting exporters....")
 	e.metricsConnection.startConnection(stopCh)
 	e.tracesConnection.startConnection(stopCh)
 	return nil
@@ -171,6 +165,7 @@ var closeStopCh = func(stopCh chan bool) {
 func (e *Exporter) Shutdown(ctx context.Context) error {
 	e.mu.RLock()
 	metricsConn := e.metricsConnection
+	tracesConn := e.tracesConnection
 	started := e.started
 	e.mu.RUnlock()
 
@@ -184,6 +179,17 @@ func (e *Exporter) Shutdown(ctx context.Context) error {
 	if metricsConn != nil {
 		// Clean things up before checking this error.
 		err = metricsConn.shutdown(ctx)
+	}
+	if err != nil {
+		return err
+	}
+
+	if tracesConn != nil {
+		// Clean things up before checking this error.
+		err = tracesConn.shutdown(ctx)
+	}
+	if err != nil {
+		return err
 	}
 
 	// At this point we can change the state variable started
@@ -239,7 +245,6 @@ func (e *Exporter) Export(parent context.Context, cps metricsdk.CheckpointSet) e
 }
 
 func (e *Exporter) ExportSpans(ctx context.Context, sds []*tracesdk.SpanData) error {
-	log.Println("exporting spans....")
 	return e.uploadTraces(ctx, sds)
 }
 

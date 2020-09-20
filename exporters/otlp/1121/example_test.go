@@ -33,7 +33,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-func TestMetricsConfig(t *testing.T) {
+func TestExporterConfig(t *testing.T) {
 	exp, err := otlp1121.NewExporter(
 		otlp1121.WithMetricsAddress("localhost:30080"),
 		otlp1121.WithMetricsInsecure(),

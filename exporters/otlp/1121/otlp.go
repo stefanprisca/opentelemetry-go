@@ -22,17 +22,22 @@ import (
 	"sync"
 
 	"go.opentelemetry.io/otel/api/metric"
+	colmetricpb "go.opentelemetry.io/otel/exporters/otlp/internal/opentelemetry-proto-gen/collector/metrics/v1"
+	"go.opentelemetry.io/otel/exporters/otlp/internal/transform"
 	metricsdk "go.opentelemetry.io/otel/sdk/export/metric"
 	"go.opentelemetry.io/otel/sdk/export/metric/aggregation"
 	tracesdk "go.opentelemetry.io/otel/sdk/export/trace"
+	"google.golang.org/grpc"
 )
 
 type Exporter struct {
 	// mu protects the non-atomic and non-channel variables
-	mu      sync.RWMutex
-	started bool
+	mu       sync.RWMutex
+	senderMu sync.RWMutex
+	started  bool
 
-	metricExporter *metricsExporter
+	metricsConnection *otlpConnection
+	metricsClient     colmetricpb.MetricsServiceClient
 
 	startOnce sync.Once
 	stopCh    chan bool
@@ -41,7 +46,7 @@ type Exporter struct {
 }
 
 var _ tracesdk.SpanExporter = (*Exporter)(nil)
-var _ metricsdk.Exporter = (*metricsExporter)(nil)
+var _ metricsdk.Exporter = (*Exporter)(nil)
 
 func (e *Exporter) ExportKindFor(*metric.Descriptor, aggregation.Kind) metricsdk.ExportKind {
 	return metricsdk.PassThroughExporter
@@ -84,12 +89,13 @@ func NewUnstartedExporter(opts ...ExporterOption) *Exporter {
 	log.Println("creating exporter....")
 	e := new(Exporter)
 	e.c = newConfig(opts...)
-	e.metricExporter = newMetricsExporter(*e.c.metrics)
 
-	// TODO (sprisca): what happens to the headers?
+	// TODO (sprisca): create metadata from the headers and send it to the connection
 	// if len(e.c.headers) > 0 {
 	// 	e.metadata = metadata.New(e.c.headers)
 	// }
+
+	e.metricsConnection = newOtlpConnection(e.handleNewMetricsConnection, *e.c.metrics)
 
 	// TODO (rghetia): add resources
 
@@ -119,7 +125,7 @@ func (e *Exporter) Start() error {
 		e.stopCh = make(chan bool)
 		e.mu.Unlock()
 
-		e.connectExporters()
+		e.startExporterConnections(e.stopCh)
 
 		// go e.indefiniteBackgroundConnection()
 
@@ -129,7 +135,7 @@ func (e *Exporter) Start() error {
 	return err
 }
 
-func (e *Exporter) connectExporters() error {
+func (e *Exporter) startExporterConnections(stopCh chan bool) error {
 	e.mu.RLock()
 	started := e.started
 	e.mu.RUnlock()
@@ -138,7 +144,16 @@ func (e *Exporter) connectExporters() error {
 	}
 
 	log.Println("connecting exporters....")
-	e.metricExporter.Connect()
+	e.metricsConnection.startConnection(stopCh)
+	return nil
+}
+
+func (e *Exporter) handleNewMetricsConnection(cc *grpc.ClientConn) error {
+
+	e.mu.Lock()
+	e.metricsClient = colmetricpb.NewMetricsServiceClient(cc)
+	e.mu.Unlock()
+
 	return nil
 }
 
@@ -185,8 +200,43 @@ func (e *Exporter) Shutdown(ctx context.Context) error {
 // interface. It transforms and batches metric Records into OTLP Metrics and
 // transmits them to the configured collector.
 func (e *Exporter) Export(parent context.Context, cps metricsdk.CheckpointSet) error {
-	log.Println("exporting metrics....")
-	return e.metricExporter.Export(parent, cps)
+	// Unify the parent context Done signal with the exporter stopCh.
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	go func(ctx context.Context, cancel context.CancelFunc) {
+		select {
+		case <-ctx.Done():
+		case <-e.stopCh:
+			cancel()
+		}
+	}(ctx, cancel)
+
+	rms, err := transform.CheckpointSet(ctx, e, cps, e.c.metrics.numWorkers)
+	if err != nil {
+		return err
+	}
+
+	if !e.metricsConnection.connected() {
+		return errDisconnected
+	}
+
+	select {
+	case <-e.stopCh:
+		return errStopped
+	case <-ctx.Done():
+		return errContextCanceled
+	default:
+		e.senderMu.Lock()
+		metricsContext := e.metricsConnection.contextWithMetadata(ctx)
+		_, err := e.metricsClient.Export(metricsContext, &colmetricpb.ExportMetricsServiceRequest{
+			ResourceMetrics: rms,
+		})
+		e.senderMu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (e *Exporter) ExportSpans(ctx context.Context, sds []*tracesdk.SpanData) error {

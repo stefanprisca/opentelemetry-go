@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -26,12 +27,16 @@ import (
 )
 
 type otlpConnection struct {
+	// mu protects the non-atomic and non-channel variables
+	mu sync.RWMutex
+
 	lastConnectErrPtr          unsafe.Pointer
 	newConnectionHandler       func(cc *grpc.ClientConn) error
 	disconnectedCh             chan bool
 	backgroundConnectionDoneCh chan bool
 	stopCh                     chan bool
 	c                          config
+	cc                         *grpc.ClientConn
 }
 
 func newOtlpConnection(handler func(cc *grpc.ClientConn) error, c config) *otlpConnection {
@@ -140,6 +145,24 @@ func (oc *otlpConnection) connect() error {
 	if err != nil {
 		return err
 	}
+
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+
+	// If previous clientConn is same as the current then just return.
+	// This doesn't happen right now as this func is only called with new ClientConn.
+	// It is more about future-proofing.
+	if oc.cc == cc {
+		oc.mu.Unlock()
+		return nil
+	}
+
+	// If the previous clientConn was non-nil, close it
+	if oc.cc != nil {
+		_ = oc.cc.Close()
+	}
+	oc.cc = cc
+
 	return oc.newConnectionHandler(cc)
 }
 

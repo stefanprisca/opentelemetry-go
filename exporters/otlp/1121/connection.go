@@ -24,12 +24,14 @@ import (
 	"unsafe"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 type otlpConnection struct {
 	// mu protects the non-atomic and non-channel variables
 	mu sync.RWMutex
 
+	metadata                   metadata.MD
 	lastConnectErrPtr          unsafe.Pointer
 	newConnectionHandler       func(cc *grpc.ClientConn) error
 	disconnectedCh             chan bool
@@ -43,6 +45,9 @@ func newOtlpConnection(handler func(cc *grpc.ClientConn) error, c config) *otlpC
 	conn := new(otlpConnection)
 	conn.newConnectionHandler = handler
 	conn.c = c
+	if len(conn.c.headers) > 0 {
+		conn.metadata = metadata.New(conn.c.headers)
+	}
 	return conn
 }
 
@@ -197,8 +202,27 @@ func (oc *otlpConnection) prepareCollectorAddress() string {
 }
 
 func (oc *otlpConnection) contextWithMetadata(ctx context.Context) context.Context {
-	// if me.metadata.Len() > 0 {
-	// 	return metadata.NewOutgoingContext(ctx, me.metadata)
-	// }
+	if oc.metadata.Len() > 0 {
+		return metadata.NewOutgoingContext(ctx, oc.metadata)
+	}
 	return ctx
+}
+
+func (oc *otlpConnection) shutdown(ctx context.Context) error {
+	oc.mu.RLock()
+	cc := oc.cc
+	oc.mu.RUnlock()
+
+	if cc != nil {
+		return cc.Close()
+	}
+
+	// Ensure that the backgroundConnector returns
+	select {
+	case <-oc.backgroundConnectionDoneCh:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
 }

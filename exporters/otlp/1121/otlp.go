@@ -90,11 +90,6 @@ func NewUnstartedExporter(opts ...ExporterOption) *Exporter {
 	e := new(Exporter)
 	e.c = newConfig(opts...)
 
-	// TODO (sprisca): create metadata from the headers and send it to the connection
-	// if len(e.c.headers) > 0 {
-	// 	e.metadata = metadata.New(e.c.headers)
-	// }
-
 	e.metricsConnection = newOtlpConnection(e.handleNewMetricsConnection, *e.c.metrics)
 
 	// TODO (rghetia): add resources
@@ -120,15 +115,10 @@ func (e *Exporter) Start() error {
 	e.startOnce.Do(func() {
 		e.mu.Lock()
 		e.started = true
-		// e.disconnectedCh = make(chan bool, 1)
-		// e.backgroundConnectionDoneCh = make(chan bool)
 		e.stopCh = make(chan bool)
 		e.mu.Unlock()
 
 		e.startExporterConnections(e.stopCh)
-
-		// go e.indefiniteBackgroundConnection()
-
 		err = nil
 	})
 
@@ -165,35 +155,29 @@ var closeStopCh = func(stopCh chan bool) {
 // Shutdown closes all connections and releases resources currently being used
 // by the exporter. If the exporter is not started this does nothing.
 func (e *Exporter) Shutdown(ctx context.Context) error {
-	// e.mu.RLock()
-	// cc := e.grpcClientConn
-	// started := e.started
-	// e.mu.RUnlock()
+	e.mu.RLock()
+	metricsConn := e.metricsConnection
+	started := e.started
+	e.mu.RUnlock()
 
-	// if !started {
-	// 	return nil
-	// }
+	if !started {
+		return nil
+	}
 
-	// var err error
-	// if cc != nil {
-	// 	// Clean things up before checking this error.
-	// 	err = cc.Close()
-	// }
+	closeStopCh(e.stopCh)
 
-	// // At this point we can change the state variable started
-	// e.mu.Lock()
-	// e.started = false
-	// e.mu.Unlock()
-	// closeStopCh(e.stopCh)
+	var err error
+	if metricsConn != nil {
+		// Clean things up before checking this error.
+		err = metricsConn.shutdown(ctx)
+	}
 
-	// // Ensure that the backgroundConnector returns
-	// select {
-	// case <-e.backgroundConnectionDoneCh:
-	// case <-ctx.Done():
-	// 	return ctx.Err()
-	// }
+	// At this point we can change the state variable started
+	e.mu.Lock()
+	e.started = false
+	e.mu.Unlock()
 
-	return nil
+	return err
 }
 
 // Export implements the "go.opentelemetry.io/otel/sdk/export/metric".Exporter
